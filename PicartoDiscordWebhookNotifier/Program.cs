@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Runtime.Serialization;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,18 +13,27 @@ namespace PicartoDiscordWebhookNotifier
 {
 	class DiscordWebhook
 	{
+        [JsonIgnore]
 		public string HookName;
+
 		public string DiscordURL;
 		public string HookUsername;
 		public string AvatarURL;
 
+        public bool ShouldSerializeHookUsername() => HookUsername != null || HookUsername.Length == 0;
+        public bool ShouldSerializeAvatarURL() => AvatarURL != null || AvatarURL.Length == 0;
+
 		public DiscordWebhook()
 		{
-
+            HookName = "DefaultName";
+            DiscordURL = "your_webhook_url";
+            HookUsername = null;
+            AvatarURL = null;
 		}
 
-		public DiscordWebhook(string url, string un, string av)
+		public DiscordWebhook(string hookName, string url, string un, string av)
 		{
+            HookName = hookName;
 			DiscordURL = url;
 			HookUsername = un;
 			AvatarURL = av;
@@ -31,6 +41,7 @@ namespace PicartoDiscordWebhookNotifier
 
 		public DiscordWebhook(DiscordWebhook other)
 		{
+            HookName = other.HookName;
 			DiscordURL = other.DiscordURL;
 			HookUsername = other.HookUsername;
 			AvatarURL = other.AvatarURL;
@@ -39,8 +50,18 @@ namespace PicartoDiscordWebhookNotifier
 
 	class PicartoUser
 	{
+        [JsonIgnore]
+        public string PicartoUsername;
+        public List<string> TargetWebhooks;
+
+        [OnSerializing]
+        internal void OnSerializingMethod(StreamingContext context)
+        {
+            TargetWebhooks = AnnounceToWebhooks.Select(w => w.HookName).Distinct().ToList();
+        }
+        
+        [JsonIgnore]
 		public List<DiscordWebhook> AnnounceToWebhooks;
-		public string PicartoUsername;
 
 		[JsonIgnore]
 		public bool IsLive;
@@ -86,50 +107,75 @@ namespace PicartoDiscordWebhookNotifier
 		public string content;
 		public string username;
 		public string avatar_url;
+
+        public bool ShouldSerializeusername() => username != null;
+        public bool ShouldSerializeavatar_url() => avatar_url != null;
 	}
+
+    class SavedConfig
+    {
+        public Dictionary<string, DiscordWebhook> AvailableChannels = new Dictionary<string, DiscordWebhook>();
+        public Dictionary<string, PicartoUser> WatchingUsers = new Dictionary<string, PicartoUser>();
+        public int SecondsBetweenChecks = 60;
+
+        [JsonIgnore]
+        public DateTime ConfigModifiedTime;
+    }
 
 	class Program
 	{
-		public static List<PicartoUser> WatchedUsers;
-		public static Dictionary<string, PicartoUser> DictWatchedUsers;
-		public static DateTime ConfigModifiedTime;
+        public static SavedConfig AppConfig;
+
+        public static void GenerateExampleConfig()
+        {
+            Console.WriteLine("Please configure your channels/watched users first. An example config has been generated for you.");
+
+            var cfg = new SavedConfig();
+
+            cfg.AvailableChannels.Add("NameOfHook", new DiscordWebhook("NameOfHook", "https://api.discord.com/this_is_your/webhook_address", "Bot Display Name", "Avatar URL"));
+            cfg.WatchingUsers.Add("PicartoUsername", new PicartoUser("PicartoUsername", cfg.AvailableChannels.Values.ToList()));
+            cfg.SecondsBetweenChecks = 60;
+
+            var json = JsonConvert.SerializeObject(cfg, Formatting.Indented);
+            File.WriteAllText("config-example.json", json);
+        }
 
 		public static void LoadConfig()
 		{
-			ConfigModifiedTime = File.GetLastWriteTime("config.json");
-			WatchedUsers = JsonConvert.DeserializeObject<List<PicartoUser>>(File.ReadAllText("config.json"));
-			DictWatchedUsers = new Dictionary<string, PicartoUser>();
+            if (!File.Exists("config.json"))
+            {
+                GenerateExampleConfig();
+                Environment.Exit(0);
+            }
 
-			foreach (var u in WatchedUsers)
-			{
-				DictWatchedUsers.Add(u.PicartoUsername, u);
-				Console.Write("Monitoring \"{0}\", Notifying:", u.PicartoUsername);
+            if (AppConfig == null)
+            {
+                AppConfig = new SavedConfig();
+            }
 
-				foreach(var h in u.AnnounceToWebhooks)
-				{
-					Console.Write(" {0}", h.HookName);
-				}
+            AppConfig = JsonConvert.DeserializeObject<SavedConfig>(File.ReadAllText("config.json"));
+            AppConfig.ConfigModifiedTime = File.GetLastWriteTime("config.json");
 
-				Console.WriteLine("");
-			}
+            AppConfig.AvailableChannels.Keys.ToList().ForEach(k => AppConfig.AvailableChannels[k].HookName = k);
+
+            foreach(var u in AppConfig.WatchingUsers)
+            {
+                u.Value.AnnounceToWebhooks = u.Value.TargetWebhooks.Where(AppConfig.AvailableChannels.ContainsKey).Select(w => AppConfig.AvailableChannels[w]).ToList();
+                u.Value.PicartoUsername = u.Key;
+
+                Console.Write("Monitoring \"{0}\", Notifying:", u.Value.PicartoUsername);
+                foreach (var h in u.Value.AnnounceToWebhooks)
+                {
+                    Console.Write(" {0}", h.HookName);
+                }
+                Console.WriteLine("");
+            }
 
 			Console.WriteLine("");
 		}
 
 		static void Main(string[] args)
 		{
-			/*
-			var baseHooks = new List<DiscordWebhook>();
-			var hook = new DiscordWebhook("https://discordapp.com/api/webhooks/308781545542647809/rWfhM5mrRXnOZo_HsMnPLnj2GqsY8kSL-KJQhO6_RcRPAPPTWw9QHqcyoQowowQBlttD", "Picarto.TV", "http://img.ganked.me/images/2017/05/02/280b47dda354f48cbfccdf382935a693.png");
-			baseHooks.Add(hook);
-			
-			var watchedUsers = new List<PicartoUser>();
-			watchedUsers.Add(new PicartoUser("MxBones", baseHooks));
-
-			// Test Server -> https://discordapp.com/api/webhooks/308781545542647809/rWfhM5mrRXnOZo_HsMnPLnj2GqsY8kSL-KJQhO6_RcRPAPPTWw9QHqcyoQowowQBlttD
-			// Writers Server #administration -> https://discordapp.com/api/webhooks/308837601811496960/lE4bR8ucwUwIgB4RtgNpkRUe6Jj_IHQ_6IFoN8EUXo7Lm60bV_pF8yiysnOlFvfh-ahe
-			*/
-
 			LoadConfig();
 
 			while (true)
@@ -137,7 +183,7 @@ namespace PicartoDiscordWebhookNotifier
 				Console.WriteLine("===== Updating =====");
 				var reloadingConfig = false;
 
-				if (File.GetLastWriteTime("config.json") != ConfigModifiedTime)
+				if (File.GetLastWriteTime("config.json") != AppConfig.ConfigModifiedTime)
 				{
 					LoadConfig();
 					reloadingConfig = true;
@@ -165,14 +211,14 @@ namespace PicartoDiscordWebhookNotifier
 				Console.WriteLine("{0} total online", onlineState.Count);
 				foreach(var os in onlineState)
 				{
-					if (DictWatchedUsers.ContainsKey(os.name))
+					if (AppConfig.WatchingUsers.ContainsKey(os.name))
 					{
-						onlineWatchedUsers.Add(DictWatchedUsers[os.name]);
+						onlineWatchedUsers.Add(AppConfig.WatchingUsers[os.name]);
 					}
 				}
 				Console.WriteLine("{0} watched users online", onlineWatchedUsers.Count);
 
-				offlineWatchedUsers = WatchedUsers.Except(onlineWatchedUsers).ToList();
+				offlineWatchedUsers = AppConfig.WatchingUsers.Values.Except(onlineWatchedUsers).ToList();
 				Console.WriteLine("{0} watched users offline", offlineWatchedUsers.Count);
 
 				foreach(var online in onlineWatchedUsers)
@@ -220,22 +266,36 @@ namespace PicartoDiscordWebhookNotifier
 				dMsg.avatar_url = hook.AvatarURL;
 				dMsg.username = hook.HookUsername;
 
-				var webReq = (HttpWebRequest)WebRequest.Create(hook.DiscordURL);
-				webReq.ContentType = "application/json";
-				webReq.Method = "POST";
+                try
+                {
+                    var webReq = (HttpWebRequest)WebRequest.Create(hook.DiscordURL);
+                    webReq.ContentType = "application/json";
+                    webReq.Method = "POST";
 
-				using (var sw = new StreamWriter(webReq.GetRequestStream()))
-				{
-					sw.Write(JsonConvert.SerializeObject(dMsg));
-					sw.Flush();
-					sw.Close();
-				}
+                    using (var sw = new StreamWriter(webReq.GetRequestStream()))
+                    {
+                        sw.Write(JsonConvert.SerializeObject(dMsg));
+                        sw.Flush();
+                        sw.Close();
+                    }
 
-				var webResp = (HttpWebResponse)webReq.GetResponse();
-				using (var sr = new StreamReader(webResp.GetResponseStream()))
-				{
-					Console.WriteLine(sr.ReadToEnd());
-				}
+                    var webResp = (HttpWebResponse)webReq.GetResponse();
+                    using (var sr = new StreamReader(webResp.GetResponseStream()))
+                    {
+                        Console.WriteLine(sr.ReadToEnd());
+                    }
+                }
+                catch (WebException ex)
+                {
+                    if (ex.Status == WebExceptionStatus.SendFailure || ex.Status == WebExceptionStatus.ReceiveFailure || ex.Status == WebExceptionStatus.ConnectFailure)
+                    {
+                        Console.WriteLine("Failed to send status update about user to Discord, or recieve a response in kind. Status: {0} Message: {1}", ex.Status, ex.Message);
+                    }
+                    else
+                    {
+                        Console.WriteLine("Webhook communication failed somehow. Status: {0} Message: {1}", ex.Status, ex.Message);
+                    }
+                }
 
 				Thread.Sleep(500);
 			}
